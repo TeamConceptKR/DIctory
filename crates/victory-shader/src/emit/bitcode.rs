@@ -103,6 +103,9 @@ pub(crate) mod pred {
     pub const OGE: u8 = 3;
     pub const OLT: u8 = 4;
     pub const OLE: u8 = 5;
+    // Not emitted: the AMD D3D12 driver treats it as UNE, so `v_cmp_lg`
+    // lowers as OLT | OGT instead.
+    #[allow(dead_code)]
     pub const ONE: u8 = 6;
     pub const ORD: u8 = 7;
     pub const UNO: u8 = 8;
@@ -205,6 +208,9 @@ pub(crate) struct Module {
     blocks: Vec<Block>,
     mds: Vec<MdDef>,
     named: Vec<(String, Vec<Md>)>,
+    /// Structures chosen between by a condition: `(cond, other)` by the
+    /// one taken where `cond` holds. [`Module::extract`] chooses the field.
+    pub chosen: HashMap<V, (V, V)>,
 }
 
 impl Module {
@@ -289,6 +295,17 @@ impl Module {
             })
             .collect();
         self.constant(ty, Const::Aggregate(ids))
+    }
+
+    /// The value of an integer constant; `None` for anything else.
+    pub fn int_value(&self, v: V) -> Option<i64> {
+        match v {
+            V::Const(i) => match self.consts[i as usize].1 {
+                Const::Int(x) => Some(x),
+                _ => None,
+            },
+            _ => None,
+        }
     }
 
     /// Gives constant `old` the content of `new` (both stay valid).
@@ -392,7 +409,14 @@ impl Module {
             TypeDef::Array(_, t) => *t,
             t => panic!("extractvalue from {t:?}"),
         };
-        self.push(block, ty, Op::Extract(agg, index))
+        let x = self.push(block, ty, Op::Extract(agg, index));
+        match self.chosen.get(&agg).copied() {
+            Some((cond, other)) => {
+                let y = self.push(block, ty, Op::Extract(other, index));
+                self.select(block, cond, x, y)
+            }
+            None => x,
+        }
     }
     pub fn call(&mut self, block: usize, f: V, args: Vec<V>) -> V {
         let V::Func(i) = f else {
